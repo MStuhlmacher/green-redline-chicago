@@ -5,8 +5,11 @@ This study examines the environmental trajectories—in terms of overall greenne
 Stuhlmacher, M. and Kim, J. (2025) "The divergent environmental trajectories of formerly redlined communities: A time series analysis of green investment in Chicago". Landscape and Urban Planning.
 
 ## Methdology Diagram:
+![alt text](CodeWorkflow.png "Methodology Diagram")
+
+Light blue boxes represent input data, dark blue is R code, orange is Python, and green is Google Earth Engine. 
 
 # Software Requirements:
 R version 4.4.2
-Google Earth Engine
+Google Earth Engine (JavaScript API)
 Python (Jypter Notebook)
