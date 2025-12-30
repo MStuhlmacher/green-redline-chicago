@@ -1,0 +1,354 @@
+//GOAL 1: Calculate NDVI for 2015 and 2020 in Chicago. Compute average and median NDVI per census tract for each city in each year
+
+//STEP 1: Set up input data and functions
+//STEP 2: Run the cloud removal function
+//STEP 3: Calculate NDVI
+//STEP 4: Summarize mean and median NDVI by census 
+//STEP 5: Export
+
+//GOAL 2: Calculate LST for 2015 in Chicago.
+
+//STEP 1: Set up input data and functions (completed in NDVI code)
+//STEP 2: Run the cloud removal function
+//STEP 3: Calculate NDVI
+//STEP 4: Summarize mean and median NDVI by census 
+//STEP 5: Export
+
+//Import census tracts
+var chi = ee.FeatureCollection("projects/ee-mstuhlmacher/assets/Collaborations/Redlining/tractsCHI_v3");
+
+//-----------GOAL 1: NDVI-----------//
+
+//STEP 1: 
+//Select just one year from the megatract files
+var filterY = ee.Filter.eq('YEAR','2006-2010');
+var cT = chi.filter(filterY);
+Map.addLayer(cT,{},'Chicago tracts',false);
+
+//Function that uses Landsat 8 Collection 2, Level 2 QA_PIXEL band (CFMask) to mask unwanted pixels.
+function maskL8sr(image) {
+  // Bit 0 - Fill
+  // Bit 1 - Dilated Cloud
+  // Bit 2 - Cirrus
+  // Bit 3 - Cloud
+  // Bit 4 - Cloud Shadow
+  var qaMask = image.select('QA_PIXEL').bitwiseAnd(parseInt('11111', 2)).eq(0);
+  var saturationMask = image.select('QA_RADSAT').eq(0);
+
+  // Apply the scaling factors to the appropriate bands.
+  var opticalBands = image.select('SR_B.').multiply(0.0000275).add(-0.2);
+  var thermalBands = image.select('ST_B.*').multiply(0.00341802).add(149.0);
+
+  // Replace the original bands with the scaled ones and apply the masks.
+  return image.addBands(opticalBands, null, true)
+      .addBands(thermalBands, null, true)
+      .updateMask(qaMask)
+      .updateMask(saturationMask);
+}
+
+//Summer month filter (June 1-Aug 31)
+var fSummer = ee.Filter.dayOfYear(152,243); 
+
+//STEP 2:
+// Map the function over two years of data
+var collection2015 = ee.ImageCollection('LANDSAT/LC08/C02/T1_L2')
+                     .filterDate('2014-01-01', '2016-01-01')
+                     .filter(fSummer)
+                     .map(maskL8sr);
+
+var composite2015 = collection2015.median();
+Map.addLayer(composite2015, {bands: ['SR_B4', 'SR_B3', 'SR_B2'], min: 0, max: 0.3},'L8 2015',false);
+
+var collection2020 = ee.ImageCollection('LANDSAT/LC08/C02/T1_L2')
+                     .filterDate('2019-01-01', '2021-01-01')
+                     .filter(fSummer)
+                     .map(maskL8sr);
+
+var composite2020 = collection2020.median();
+Map.addLayer(composite2020, {bands: ['SR_B4', 'SR_B3', 'SR_B2'], min: 0, max: 0.3},'L8 2020',false);
+
+//STEP 3: Calculate NDVI
+var ndvi2015 = composite2015.normalizedDifference(['SR_B5', 'SR_B4']).rename('NDVI');
+var ndvi2020 = composite2020.normalizedDifference(['SR_B5', 'SR_B4']).rename('NDVI');
+
+var ndvi_palette = {min:-0.1, max:1, palette: ['FFFFFF','CE7E45', 'DF923D', 'F1B555', 'FCD163', '99B718', '74A901', '66A000','529400',
+                                              '3E8601', '207401', '056201', '004C00', '023B01', '012E01', '011D01', '011301']};
+Map.addLayer(ndvi2015,ndvi_palette,'NDVI 2015',false);
+Map.addLayer(ndvi2020,ndvi_palette,'NDVI 2020',false);
+
+//STEP 4: Summarize mean and median NDVI by census tract
+// Combine the mean and standard deviation reducers.
+var reducers = ee.Reducer.mean().combine({
+  reducer2: ee.Reducer.median(),
+  sharedInputs: true
+});
+
+// Use the combined reducer to get the mean and median of the image.
+//Chicago
+var chi2015 = ndvi2015.select('NDVI').reduceRegions({
+  collection: cT,
+  reducer: reducers,
+  scale: 30
+});
+
+var chi2020 = ndvi2020.select('NDVI').reduceRegions({
+  collection: cT,
+  reducer: reducers,
+  scale: 30
+});
+
+//STEP 5: Export
+//Function to remove geometry column for export
+var removeGeo = (function(feature){
+  feature = feature.setGeometry(null);
+  return (feature)});
+  
+//Map remove geometry function
+var chi2015e = chi2015.map(removeGeo);
+var chi2020e = chi2020.map(removeGeo);
+
+print(chi2020e.first());
+
+//Export tables
+Export.table.toDrive({
+  collection: chi2015e, 
+  description: 'ChicagoNDVI2015', 
+  fileFormat: 'CSV', 
+  selectors: ['cluster_id', 'mean','median']});
+
+Export.table.toDrive({
+  collection: chi2020e, 
+  description: 'ChicagoNDVI2020', 
+  fileFormat: 'CSV', 
+  selectors: ['cluster_id', 'mean','median']});
+
+//-----------GOAL 2: LST 2015-----------//
+//STEP 1: Cloud masking function for LST
+//Function that uses Landsat 8 Collection 2, Level 2 QA_PIXEL band (CFMask) to mask unwanted pixels.
+function maskL8st(image) {
+  // Bit 0 - Fill
+  // Bit 1 - Dilated Cloud
+  // Bit 2 - Cirrus
+  // Bit 3 - Cloud
+  // Bit 4 - Cloud Shadow
+  var qaMask = image.select('QA_PIXEL').bitwiseAnd(parseInt('11111', 2)).eq(0);
+  var saturationMask = image.select('QA_RADSAT').eq(0);
+
+  // Apply the scaling factors to the appropriate bands.
+  //var opticalBands = image.select('SR_B.').multiply(0.0000275).add(-0.2);
+  var thermalBands = image.select('ST_B.*').multiply(0.00341802).add(149.0);
+
+  // Replace the original bands with the scaled ones and apply the masks.
+  return image
+      //.addBands(opticalBands, null, true)
+      .addBands(thermalBands, null, true)
+      .updateMask(qaMask)
+      .updateMask(saturationMask);
+}
+
+//STEP 2:
+//11 images for Chicago in 2015 range, between 1/1/2014 and 1/1/2016 (June, July, August) with 50% or less cloud cover, Landsat 8 C2 L2
+var chi1QAP_15 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2015/LC08_L2SP_022031_20140730_20200911_02_T1_QA_PIXEL').rename('QA_PIXEL');
+var chi1QAR_15 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2015/LC08_L2SP_022031_20140730_20200911_02_T1_QA_RADSAT').rename('QA_RADSAT');
+var chi1ST_15 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2015/LC08_L2SP_022031_20140730_20200911_02_T1_ST_B10').rename('ST_B10');
+var chi1_15 = chi1QAP_15.addBands(chi1QAR_15).addBands(chi1ST_15);
+
+var chi2QAP_15 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2015/LC08_L2SP_022031_20140815_20200911_02_T1_QA_PIXEL').rename('QA_PIXEL');
+var chi2QAR_15 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2015/LC08_L2SP_022031_20140815_20200911_02_T1_QA_RADSAT').rename('QA_RADSAT');
+var chi2ST_15 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2015/LC08_L2SP_022031_20140815_20200911_02_T1_ST_B10').rename('ST_B10');
+var chi2_15 = chi2QAP_15.addBands(chi2QAR_15).addBands(chi2ST_15);
+
+var chi3QAP_15 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2015/LC08_L2SP_022031_20140831_20200911_02_T1_QA_PIXEL').rename('QA_PIXEL');
+var chi3QAR_15 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2015/LC08_L2SP_022031_20140831_20200911_02_T1_QA_RADSAT').rename('QA_RADSAT');
+var chi3ST_15 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2015/LC08_L2SP_022031_20140831_20200911_02_T1_ST_B10').rename('ST_B10');
+var chi3_15 = chi3QAP_15.addBands(chi3QAR_15).addBands(chi3ST_15);
+
+var chi4QAP_15 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2015/LC08_L2SP_022031_20150701_20200909_02_T1_QA_PIXEL').rename('QA_PIXEL');
+var chi4QAR_15 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2015/LC08_L2SP_022031_20150701_20200909_02_T1_QA_RADSAT').rename('QA_RADSAT');
+var chi4ST_15 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2015/LC08_L2SP_022031_20150701_20200909_02_T1_ST_B10').rename('ST_B10');
+var chi4_15 = chi4QAP_15.addBands(chi4QAR_15).addBands(chi4ST_15);
+
+var chi5QAP_15 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2015/LC08_L2SP_022031_20150717_20200909_02_T1_QA_PIXEL').rename('QA_PIXEL');
+var chi5QAR_15 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2015/LC08_L2SP_022031_20150717_20200909_02_T1_QA_RADSAT').rename('QA_RADSAT');
+var chi5ST_15 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2015/LC08_L2SP_022031_20150717_20200909_02_T1_ST_B10').rename('ST_B10');
+var chi5_15 = chi5QAP_15.addBands(chi5QAR_15).addBands(chi5ST_15);
+
+var chi6QAP_15 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2015/LC08_L2SP_022031_20150802_20200908_02_T1_QA_PIXEL').rename('QA_PIXEL');
+var chi6QAR_15 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2015/LC08_L2SP_022031_20150802_20200908_02_T1_QA_RADSAT').rename('QA_RADSAT');
+var chi6ST_15 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2015/LC08_L2SP_022031_20150802_20200908_02_T1_ST_B10').rename('ST_B10');
+var chi6_15 = chi6QAP_15.addBands(chi6QAR_15).addBands(chi6ST_15);
+
+var chi7QAP_15 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2015/LC08_L2SP_022031_20150818_20200908_02_T1_QA_PIXEL').rename('QA_PIXEL');
+var chi7QAR_15 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2015/LC08_L2SP_022031_20150818_20200908_02_T1_QA_RADSAT').rename('QA_RADSAT');
+var chi7ST_15 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2015/LC08_L2SP_022031_20150818_20200908_02_T1_ST_B10').rename('ST_B10');
+var chi7_15 = chi7QAP_15.addBands(chi7QAR_15).addBands(chi7ST_15);
+
+var chi8QAP_15 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2015/LC08_L2SP_023031_20140603_20200911_02_T1_QA_PIXEL').rename('QA_PIXEL');
+var chi8QAR_15 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2015/LC08_L2SP_023031_20140603_20200911_02_T1_QA_RADSAT').rename('QA_RADSAT');
+var chi8ST_15 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2015/LC08_L2SP_023031_20140603_20200911_02_T1_ST_B10').rename('ST_B10');
+var chi8_15 = chi8QAP_15.addBands(chi8QAR_15).addBands(chi8ST_15);
+
+var chi9QAP_15 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2015/LC08_L2SP_023031_20140721_20200911_02_T1_QA_PIXEL').rename('QA_PIXEL');
+var chi9QAR_15 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2015/LC08_L2SP_023031_20140721_20200911_02_T1_QA_RADSAT').rename('QA_RADSAT');
+var chi9ST_15 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2015/LC08_L2SP_023031_20140721_20200911_02_T1_ST_B10').rename('ST_B10');
+var chi9_15 = chi9QAP_15.addBands(chi9QAR_15).addBands(chi9ST_15);
+
+var chi10QAP_15 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2015/LC08_L2SP_023031_20150606_20200909_02_T1_QA_PIXEL').rename('QA_PIXEL');
+var chi10QAR_15 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2015/LC08_L2SP_023031_20150606_20200909_02_T1_QA_RADSAT').rename('QA_RADSAT');
+var chi10ST_15 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2015/LC08_L2SP_023031_20150606_20200909_02_T1_ST_B10').rename('ST_B10');
+var chi10_15 = chi10QAP_15.addBands(chi10QAR_15).addBands(chi10ST_15);
+
+var chi11QAP_15 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2015/LC08_L2SP_023031_20150724_20200908_02_T1_QA_PIXEL').rename('QA_PIXEL');
+var chi11QAR_15 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2015/LC08_L2SP_023031_20150724_20200908_02_T1_QA_RADSAT').rename('QA_RADSAT');
+var chi11ST_15 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2015/LC08_L2SP_023031_20150724_20200908_02_T1_ST_B10').rename('ST_B10');
+var chi11_15 = chi11QAP_15.addBands(chi11QAR_15).addBands(chi11ST_15);
+
+var chiIC_15 = ee.ImageCollection([chi1_15,chi2_15,chi3_15,chi4_15,chi5_15,chi6_15,chi7_15,chi8_15,chi9_15,chi10_15,chi11_15]);
+Map.addLayer(chiIC_15,{},'CHI ic 2015',false);
+
+//STEP 3: Calculate LST
+// Map the function over two years of data.
+var collectionCHI_15 = chiIC_15.map(maskL8st);
+Map.addLayer(collectionCHI_15,{},'CHI collection 2015',false);
+
+//Calculate LST
+var lstCHI_15 = collectionCHI_15.median().select('ST_B10')//.clip(cT);
+Map.addLayer(lstCHI_15,{},'CHI lst 2015',false);
+
+//STEP 4: Summarize mean and median LST by census tract
+// Use the combined reducer to get the mean and median of the image.
+var chi2015 = lstCHI_15.select('ST_B10').reduceRegions({
+  collection: cT,
+  reducer: reducers,
+  scale: 30
+});
+
+//STEP 5: Export
+var chi2015e = chi2015.map(removeGeo); //Map remove geometry function
+print(chi2015e.first());
+
+//Export tables
+Export.table.toDrive({
+  collection: chi2015e, 
+  description: 'ChicagoLST2015', 
+  fileFormat: 'CSV', 
+  selectors: ['cluster_id', 'mean','median']});
+
+//-----------GOAL 3: LST 2020-----------//
+//STEP 1:
+//17 images for Chicago in 2020 range.
+var chi1QAP_20 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2020/LC08_L2SP_022031_20190610_20200828_02_T1_QA_PIXEL').rename('QA_PIXEL');
+var chi1QAR_20 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2020/LC08_L2SP_022031_20190610_20200828_02_T1_QA_RADSAT').rename('QA_RADSAT');
+var chi1ST_20 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2020/LC08_L2SP_022031_20190610_20200828_02_T1_ST_B10').rename('ST_B10');
+var chi1_20 = chi1QAP_20.addBands(chi1QAR_20).addBands(chi1ST_20);
+
+var chi2QAP_20 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2020/LC08_L2SP_022031_20190626_20200827_02_T1_QA_PIXEL').rename('QA_PIXEL');
+var chi2QAR_20 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2020/LC08_L2SP_022031_20190626_20200827_02_T1_QA_RADSAT').rename('QA_RADSAT');
+var chi2ST_20 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2020/LC08_L2SP_022031_20190626_20200827_02_T1_ST_B10').rename('ST_B10');
+var chi2_20 = chi2QAP_20.addBands(chi2QAR_20).addBands(chi2ST_20);
+
+var chi3QAP_20 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2020/LC08_L2SP_022031_20190712_20200827_02_T1_QA_PIXEL').rename('QA_PIXEL');
+var chi3QAR_20 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2020/LC08_L2SP_022031_20190712_20200827_02_T1_QA_RADSAT').rename('QA_RADSAT');
+var chi3ST_20 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2020/LC08_L2SP_022031_20190712_20200827_02_T1_ST_B10').rename('ST_B10');
+var chi3_20 = chi3QAP_20.addBands(chi3QAR_20).addBands(chi3ST_20);
+
+var chi4QAP_20 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2020/LC08_L2SP_022031_20190728_20200827_02_T1_QA_PIXEL').rename('QA_PIXEL');
+var chi4QAR_20 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2020/LC08_L2SP_022031_20190728_20200827_02_T1_QA_RADSAT').rename('QA_RADSAT');
+var chi4ST_20 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2020/LC08_L2SP_022031_20190728_20200827_02_T1_ST_B10').rename('ST_B10');
+var chi4_20 = chi4QAP_20.addBands(chi4QAR_20).addBands(chi4ST_20);
+
+var chi5QAP_20 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2020/LC08_L2SP_022031_20190829_20200826_02_T1_QA_PIXEL').rename('QA_PIXEL');
+var chi5QAR_20 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2020/LC08_L2SP_022031_20190829_20200826_02_T1_QA_RADSAT').rename('QA_RADSAT');
+var chi5ST_20 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2020/LC08_L2SP_022031_20190829_20200826_02_T1_ST_B10').rename('ST_B10');
+var chi5_20 = chi5QAP_20.addBands(chi5QAR_20).addBands(chi5ST_20);
+
+var chi6QAP_20 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2020/LC08_L2SP_022031_20200612_20200823_02_T1_QA_PIXEL').rename('QA_PIXEL');
+var chi6QAR_20 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2020/LC08_L2SP_022031_20200612_20200823_02_T1_QA_RADSAT').rename('QA_RADSAT');
+var chi6ST_20 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2020/LC08_L2SP_022031_20200612_20200823_02_T1_ST_B10').rename('ST_B10');
+var chi6_20 = chi6QAP_20.addBands(chi6QAR_20).addBands(chi6ST_20);
+
+var chi7QAP_20 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2020/LC08_L2SP_022031_20200628_20200823_02_T1_QA_PIXEL').rename('QA_PIXEL');
+var chi7QAR_20 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2020/LC08_L2SP_022031_20200628_20200823_02_T1_QA_RADSAT').rename('QA_RADSAT');
+var chi7ST_20 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2020/LC08_L2SP_022031_20200628_20200823_02_T1_ST_B10').rename('ST_B10');
+var chi7_20 = chi7QAP_20.addBands(chi7QAR_20).addBands(chi7ST_20);
+
+var chi8QAP_20 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2020/LC08_L2SP_022031_20200714_20200912_02_T1_QA_PIXEL').rename('QA_PIXEL');
+var chi8QAR_20 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2020/LC08_L2SP_022031_20200714_20200912_02_T1_QA_RADSAT').rename('QA_RADSAT');
+var chi8ST_20 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2020/LC08_L2SP_022031_20200714_20200912_02_T1_ST_B10').rename('ST_B10');
+var chi8_20 = chi8QAP_20.addBands(chi8QAR_20).addBands(chi8ST_20);
+
+var chi9QAP_20 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2020/LC08_L2SP_022031_20200815_20200920_02_T1_QA_PIXEL').rename('QA_PIXEL');
+var chi9QAR_20 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2020/LC08_L2SP_022031_20200815_20200920_02_T1_QA_RADSAT').rename('QA_RADSAT');
+var chi9ST_20 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2020/LC08_L2SP_022031_20200815_20200920_02_T1_ST_B10').rename('ST_B10');
+var chi9_20 = chi9QAP_20.addBands(chi9QAR_20).addBands(chi9ST_20);
+
+var chi10QAP_20 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2020/LC08_L2SP_022031_20200831_20200906_02_T1_QA_PIXEL').rename('QA_PIXEL');
+var chi10QAR_20 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2020/LC08_L2SP_022031_20200831_20200906_02_T1_QA_RADSAT').rename('QA_RADSAT');
+var chi10ST_20 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2020/LC08_L2SP_022031_20200831_20200906_02_T1_ST_B10').rename('ST_B10');
+var chi10_20 = chi10QAP_20.addBands(chi10QAR_20).addBands(chi10ST_20);
+
+var chi11QAP_20 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2020/LC08_L2SP_023031_20190601_20200828_02_T1_QA_PIXEL').rename('QA_PIXEL');
+var chi11QAR_20 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2020/LC08_L2SP_023031_20190601_20200828_02_T1_QA_RADSAT').rename('QA_RADSAT');
+var chi11ST_20 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2020/LC08_L2SP_023031_20190601_20200828_02_T1_ST_B10').rename('ST_B10');
+var chi11_20 = chi11QAP_20.addBands(chi11QAR_20).addBands(chi11ST_20);
+
+var chi12QAP_20 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2020/LC08_L2SP_023031_20190703_20200827_02_T1_QA_PIXEL').rename('QA_PIXEL');
+var chi12QAR_20 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2020/LC08_L2SP_023031_20190703_20200827_02_T1_QA_RADSAT').rename('QA_RADSAT');
+var chi12ST_20 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2020/LC08_L2SP_023031_20190703_20200827_02_T1_ST_B10').rename('ST_B10');
+var chi12_20 = chi12QAP_20.addBands(chi12QAR_20).addBands(chi12ST_20);
+
+var chi13QAP_20 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2020/LC08_L2SP_023031_20190804_20200827_02_T1_QA_PIXEL').rename('QA_PIXEL');
+var chi13QAR_20 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2020/LC08_L2SP_023031_20190804_20200827_02_T1_QA_RADSAT').rename('QA_RADSAT');
+var chi13ST_20 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2020/LC08_L2SP_023031_20190804_20200827_02_T1_ST_B10').rename('ST_B10');
+var chi13_20 = chi13QAP_20.addBands(chi13QAR_20).addBands(chi13ST_20);
+
+var chi14QAP_20 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2020/LC08_L2SP_023031_20200619_20200823_02_T1_QA_PIXEL').rename('QA_PIXEL');
+var chi14QAR_20 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2020/LC08_L2SP_023031_20200619_20200823_02_T1_QA_RADSAT').rename('QA_RADSAT');
+var chi14ST_20 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2020/LC08_L2SP_023031_20200619_20200823_02_T1_ST_B10').rename('ST_B10');
+var chi14_20 = chi14QAP_20.addBands(chi14QAR_20).addBands(chi14ST_20);
+
+var chi15QAP_20 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2020/LC08_L2SP_023031_20200705_20200913_02_T1_QA_PIXEL').rename('QA_PIXEL');
+var chi15QAR_20 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2020/LC08_L2SP_023031_20200705_20200913_02_T1_QA_RADSAT').rename('QA_RADSAT');
+var chi15ST_20 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2020/LC08_L2SP_023031_20200705_20200913_02_T1_ST_B10').rename('ST_B10');
+var chi15_20 = chi15QAP_20.addBands(chi15QAR_20).addBands(chi15ST_20);
+
+var chi16QAP_20 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2020/LC08_L2SP_023031_20200806_20210330_02_T1_QA_PIXEL').rename('QA_PIXEL');
+var chi16QAR_20 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2020/LC08_L2SP_023031_20200806_20210330_02_T1_QA_RADSAT').rename('QA_RADSAT');
+var chi16ST_20 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2020/LC08_L2SP_023031_20200806_20210330_02_T1_ST_B10').rename('ST_B10');
+var chi16_20 = chi16QAP_20.addBands(chi16QAR_20).addBands(chi16ST_20);
+
+var chi17QAP_20 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2020/LC08_L2SP_023031_20200822_20200905_02_T1_QA_PIXEL').rename('QA_PIXEL');
+var chi17QAR_20 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2020/LC08_L2SP_023031_20200822_20200905_02_T1_QA_RADSAT').rename('QA_RADSAT');
+var chi17ST_20 = ee.Image('projects/ee-mstuhlmacher/assets/Collaborations/Redlining/ChicagoLST2020/LC08_L2SP_023031_20200822_20200905_02_T1_ST_B10').rename('ST_B10');
+var chi17_20 = chi17QAP_20.addBands(chi17QAR_20).addBands(chi17ST_20);
+
+var chiIC_20 = ee.ImageCollection([chi1_20,chi2_20,chi3_20,chi4_20,chi5_20,chi6_20,chi7_20,chi8_20,chi9_20,chi10_20,chi11_20,chi12_20,chi13_20,chi14_20,chi15_20,chi16_20,chi17_20]);
+Map.addLayer(chiIC_20,{},'CHI ic 2020',false);
+
+//STEP 2: Calculate LST
+// Map the function over two years of data.
+var collectionCHI_20 = chiIC_20.map(maskL8st);
+Map.addLayer(collectionCHI_20,{},'CHI collection 2020',false);
+
+//Calculate LST
+var lstCHI_20 = collectionCHI_20.median().select('ST_B10')//.clip(cT);
+Map.addLayer(lstCHI_20,{},'CHI lst 2020',false);
+
+//STEP 3: Summarize mean and median LST by census tract
+// Use the combined reducer to get the mean and median of the image.
+var chi2020 = lstCHI_20.select('ST_B10').reduceRegions({
+  collection: cT,
+  reducer: reducers,
+  scale: 30
+});
+
+//STEP 4: Export
+var chi2020e = chi2020.map(removeGeo); //Map remove geometry function
+print(chi2020e.first());
+
+//Export tables
+Export.table.toDrive({
+  collection: chi2020e, 
+  description: 'ChicagoLST2020', 
+  fileFormat: 'CSV', 
+  selectors: ['cluster_id', 'mean','median']});
